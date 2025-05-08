@@ -1,0 +1,1598 @@
+---
+title: "Технологический практикум (практикум на ЭВМ)"
+author: "Рукавица Артём Кириллович, 316"
+output:
+  html_document: default
+date: "2024-09-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 0. Описание датасета. Подготовка рабочего окружения
+
+В качестве датасета для выполнения задания я выбрал данные о показателях сна и здоровья. Этот датасет состоит из нескольких столбцов:
+
+1. Heart Rate Variability: Изменения интервалов между ударами сердца.
+
+2. Body Temperature: Температура тела в градусах Цельсия.
+
+3. Movement During Sleep: Количество движений во время сна.
+
+4. Sleep Duration Hours: Длительность сна.
+
+5. Sleep Quality Score: Качество сна.
+
+6. Caffeine Intake (mg): Количество потребления кофеина в миллиграммах.
+
+7. Stress Level: Уровень стресса.
+
+8. Bedtime Consistency: Регулярность режима сна. Принимает значения из отрезка `[0; 1]`, где более низкие значения указывают на большую нерегулярность.
+
+9. Light Exposure Hours: Часы воздействия света в течение дня. Отражает типичное дневное освещение.
+
+Мы готовы начинать!
+Покдлючим библиотеки, а также датасет к рабочему окружению.
+
+```{r message=FALSE, warning=FALSE}
+library(xtable)
+library(stargazer)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(outliers)
+library(forcats)
+library(nortest)
+library(goftest)
+library(car)
+library(Exact)
+library(polycor)
+library(reshape2)
+library(RColorBrewer)
+library(pwr)
+```
+
+```{r}
+sleep <- read.csv("D:\\Artyom\\ВМК\\5 семестр\\Практикум\\SleepHealth.csv")
+head(sleep)
+```
+
+
+## 1. Описание, краткие характеристики (максимумы-минимумы, средние значения, пропуски и т.п.)
+```{r}
+table <- summary(sleep)
+na <- data.frame(as.list(sapply(X = sleep, FUN = function(x) sum(is.na(x)))))
+rownames(na) <- c("Count of NA")
+table <- do.call(cbind, lapply(sleep, summary))
+table <- rbind(table, na)
+knitr::kable(table)
+```
+Обратим внимание на то, что пропусков в данных нет.
+
+## 2. Реализовать аппроксимацию распределений данных с помощью ядерных оценок
+
+Исследуем распределение столбца HeartRateVariability
+
+
+```{r warning=FALSE}
+ggplot(sleep, aes(x = HeartRateVariability)) + 
+  geom_density(aes(fill = "Density"), lwd = 1, alpha = 0.4) +
+  geom_histogram(aes(y = ..density.., fill = "Histogram"), 
+                 colour = 1, alpha = 0.4, bins = 40) +
+  scale_fill_manual(name = "Legend", values = c("Histogram" = "#69b3a2", "Density" = 4)) +
+  ggtitle("KDE для HeartRateVariability") +
+  theme(
+    legend.position = c(.95, .95),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6)
+  )
+```
+
+1. Распределение для HeartRateVariability имеет симметричную колоколообразную фор
+му, схожую с нормальным распределением. Центр сосредоточен около среднего зна
+чения (порядка 70).
+2. Выраженные выбросы отсутствуют.
+3. Плотность, отображаемая KDE, согласуется с гистограммой, что подтверждает кор
+ректность метода сглаживания.
+
+```{r}
+sleep$SleepDurationHoursCorrected <- round(sleep$SleepDurationHours)
+sleep$SleepDurationHoursGroups <- cut(sleep$SleepDurationHoursCorrected, 
+                                         breaks = c(2, 6, 9, 12), 
+                                         labels = c("Short", "Normal", "Long"),
+                                         right=T)
+edges <- hist(sleep$HeartRateVariability, breaks = "FD", plot = FALSE)$breaks
+
+ggplot() +
+  geom_histogram(data = filter(sleep, SleepDurationHoursGroups == 'Short'),
+                 aes(x = HeartRateVariability, y = ..density.., fill = 'Short'),
+                 breaks = edges, alpha = 0.3) +
+  geom_density(data = filter(sleep, SleepDurationHoursGroups == 'Short'),
+               aes(x = HeartRateVariability, color = 'Short')) +
+  geom_histogram(data = filter(sleep, SleepDurationHoursGroups == 'Normal'),
+                 aes(x = HeartRateVariability, y = ..density.., fill = 'Normal'),
+                 breaks = edges, alpha = 0.3) +
+  geom_density(data = filter(sleep, SleepDurationHoursGroups == 'Normal'),
+               aes(x = HeartRateVariability, color = 'Normal')) +
+  geom_histogram(data = filter(sleep, SleepDurationHoursGroups == 'Long'),
+                 aes(x = HeartRateVariability, y = ..density.., fill = 'Long'),
+                 breaks = edges, alpha = 0.3) +
+  geom_density(data = filter(sleep, SleepDurationHoursGroups == 'Long'),
+               aes(x = HeartRateVariability, color = 'Long')) +
+  labs(x = 'HeartRateVariability',
+       title = 'KDE для HeartRateVariability по группам длительности сна',
+       fill = 'Длительность сна',
+       color = 'Длительность сна') +
+  theme_minimal() +
+  scale_fill_manual(values = c('Short' = 'red', 'Normal' = 'blue', 'Long' = 'green')) +
+  scale_color_manual(values = c('Short' = 'red', 'Normal' = 'blue', 'Long' = 'green'))
+
+
+```
+
+## 3. Реализовать анализ данных с помощью cdplot, dotchart, boxplot и stripchart
+
+Для простоты анализа данных округлим значения длительности сна до целого числа.
+```{r}
+sleep$SleepDurationHoursCorrected <- round(sleep$SleepDurationHours)
+unique(sleep$SleepDurationHoursCorrected)
+```
+Мы получили 10 натуральных значений от 3 до 12.
+
+#### cdplot
+Построим график зависимости сна от принятого кофеина.
+```{r}
+cdplot(factor(sleep$SleepDurationHoursCorrected) ~ sleep$CaffeineIntakeMg)
+```
+
+На этом графике трудно разобраться, что к чему относится. Разделим для простоты длительность сна на три категории: короткий сон (3-6 часов), сон средней продолжительности (7-9 часов) и долгий сон (10-12 часов).
+```{r}
+sleep$SleepDurationHoursGroups <- cut(sleep$SleepDurationHoursCorrected, 
+                                         breaks = c(2, 6, 9, 12), 
+                                         labels = c("Short", "Normal", "Long"),
+                                         right=T)
+```
+
+
+#### dotchart
+Теперь построим dotplot зависимости среднего качества сна от его длительности.
+```{r}
+sleep$SleepQualityScore <- round(sleep$SleepQualityScore)
+result <- aggregate(SleepQualityScore ~ SleepDurationHoursCorrected, data = sleep, FUN = mean)
+dotchart(result$SleepQualityScore, labels = result$SleepDurationHoursCorrected,
+         main = "Dotplot of Sleep Quality vs Mean of Sleep Duration",
+         xlab = "Mean of Sleep Quality Scores",
+         ylab = "Sleep Duration (Hours)")
+```
+
+
+#### boxplot
+Для серии boxplot-ов для удобства разделим уровень стресса на четыре категории: низкий, средний, высокий, очень высокий.
+```{r}
+sleep$StressLevelGroup <- cut(sleep$StressLevel, 
+                              breaks = c(-1, 3, 6, 8, 10), 
+                              labels = c("Low", "Medium", "High", "Very High"),
+                              right=T
+                              )
+```
+
+Исследуем длительность сна от уровня стресса.
+```{r}
+ggplot(sleep, aes(x=as.factor(StressLevelGroup), y=SleepDurationHours)) + 
+  geom_boxplot(fill="slateblue", alpha=0.2, outliers = FALSE) + 
+  xlab("Stress Level by Groups")
+```
+
+Исследуем потребление кофеина от уровня стресса.
+```{r}
+ggplot(sleep, aes(x=as.factor(StressLevelGroup), y=CaffeineIntakeMg)) + 
+  geom_boxplot(fill="slateblue", alpha=0.2, outliers = FALSE) + 
+  xlab("Stress Level by Groups")
+```
+
+Исследуем количество движений во время сна от уровня стресса.
+```{r}
+ggplot(sleep, aes(x=as.factor(StressLevelGroup), y=MovementDuringSleep)) + 
+  geom_boxplot(fill="slateblue", alpha=0.2, outliers = FALSE) + 
+  xlab("Stress Level by Groups")
+```
+
+#### stripchart
+
+```{r}
+ggplot(sleep, aes(x = StressLevelGroup, y = CaffeineIntakeMg)) +
+  geom_jitter(color = "blue", width = 0.1, height = 0) +
+  labs(
+    x = "Stress Level by Groups",
+    y = "Caffeine Intake (mg)",
+    title = "Stripchart of Sleep Duration by Stress Level Groups"
+  ) +
+  theme_minimal()
+```
+
+##  4. Проверить, являются ли наблюдения выбросами с точки зрения формальных статистических критериев Граббса и Q-теста Диксона.
+
+Для этих критериев требуется нормальность выборки, проверим часть столбцов на нормальность при помощи критерия Шапиро — Уилка. Выведем p-значения этого критерия.
+
+```{r silent = TRUE}
+paste("CaffeineIntakeMg: ", shapiro.test(sleep$CaffeineIntakeMg)$p.value)
+paste("StressLevel: ", shapiro.test(sleep$StressLevel)$p.value)
+paste("LightExposureHours: ", shapiro.test(sleep$LightExposureHours)$p.value)
+paste("MovementDuringSleep: ", shapiro.test(sleep$MovementDuringSleep)$p.value)
+```
+
+Заметим, что p-значения первых двух тестов меньше порогового показателя 0.05, поэтому мы не можем сделать вывод о том, что выборки распределены нормально (критерии Граббса, Диксона неприменимы). Напротив, для последних двух выборок это возможно сделать.
+Убедимся на графике, что LightExposureHours и MovementDuringSleep действительно распределены нормально.
+```{r}
+hist(sleep$MovementDuringSleep, breaks=30 , xlim=c(0,6) , 
+     col=rgb(1,0,0,0.5) , 
+     xlab="MovementDuringSleep" , 
+     ylab="Count" , 
+     main="Histogram (approx normal ditribution)" )
+```
+```{r}
+hist(sleep$LightExposureHours, breaks=30 , xlim=c(0,15), 
+     col=rgb(0,0,1,0.5) , 
+     xlab="LightExposureHours" , 
+     ylab="Count" , 
+     main="Histogram (approx normal ditribution)")
+```
+
+
+Исследуем показатель MovementDuringSleep на наличие выбросов.
+
+Для простоты округлим этот показатель до двух знаков после запятой.
+```{r}
+sleep$MovementDuringSleep <- round(sleep$MovementDuringSleep, 2)
+```
+
+#### Тест Граббса
+```{r}
+test <- grubbs.test(sleep$MovementDuringSleep)
+test
+```
+
+
+Тест Граббса показывает, что значение 5.93 - это выброс. Убедимся в этом на классическом boxplot.
+```{r warning=FALSE}
+ggplot(sleep, aes(y=MovementDuringSleep)) + 
+  geom_boxplot(fill="slateblue", alpha=0.2)+
+  geom_point(aes(x=0, y=5.93), col="red", size=3)+
+  ggtitle("Boxplot for MovementDuringSleep with an outline")
+```
+
+Действительно, 5.93 - выброс в наблюдении выборки MovementDuringSleep.
+
+Посмотрим, какая строка набора данных соответствует этому значению...
+```{r}
+string <- filter(sleep, MovementDuringSleep == 5.93)
+string
+```
+
+... и какой индекс у этой строки в датасете.
+```{r}
+indices <- which(sleep$MovementDuringSleep == 5.93)
+print(indices)
+```
+
+#### Q-тест Диксона
+
+```{r}
+subdata <- sleep$MovementDuringSleep[890:910]
+test <- dixon.test(subdata)
+test
+```
+
+Результат такой же.
+
+## 5. Воспользоваться инструментами для заполнения пропусков в данных. Пропуски внести вручную и сравнить результаты заполнения с истинными значениями.
+
+Вспомним, что в данных нет пропусков.
+
+```{r}
+na <- data.frame(as.list(sapply(X = sleep, FUN = function(x) sum(is.na(x)))))
+na
+```
+
+
+Это не проблема: попробуем внести пропуски, например, в столбец BodyTemperature.
+Создаим массив из случайных 10 чисел. Значения, соответствующие данным индексам, обратим в NA.
+
+```{r}
+indices <- c(894, 2, 198, 753, 186, 78, 45, 187, 952, 886)
+print(sleep$BodyTemperature[indices])
+print(median(sleep$BodyTemperature))
+print(mean(sleep$BodyTemperature))
+sleep$BodyTemperature[indices] <- NA
+```
+
+Проверим, удалились ли эти значения?
+
+```{r}
+sum(is.na(sleep$BodyTemperature))
+```
+
+Все отлично! Теперь построим гистограмму для измененных данных.
+
+```{r warning=FALSE}
+ggplot(sleep, aes(x = BodyTemperature)) + 
+  geom_density(aes(fill = "Density"), lwd = 1, alpha = 0.4) +
+  geom_histogram(aes(y = ..density.., fill = "Histogram"), 
+                 colour = 1, alpha = 0.4, bins = 40) +
+  scale_fill_manual(name = "Legend", values = c("Histogram" = "#69b3a2", "Density" = 4)) +
+  ggtitle("KDE для BodyTemperature") +
+  theme(
+    legend.position = c(.95, .95),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6)
+  )
+```
+
+
+Заполним пропущенные значения медианой. 
+```{r}
+med <- median(sleep$BodyTemperature, na.rm = TRUE)
+sleep$BodyTemperature[indices] <- median(sleep$BodyTemperature, na.rm = TRUE)
+print(med)
+```
+
+```{r}
+ggplot(sleep, aes(x = BodyTemperature)) + 
+  geom_density(aes(fill = "Density"), lwd = 1, alpha = 0.4) +
+  geom_histogram(aes(y = ..density.., fill = "Histogram"), 
+                 colour = 1, alpha = 0.4, bins = 40) +
+  scale_fill_manual(name = "Legend", values = c("Histogram" = "#69b3a2", "Density" = 4)) +
+  ggtitle("KDE для BodyTemperature с заполнением медианой") +
+  theme(
+    legend.position = c(.95, .95),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6)
+  )
+```
+
+
+Заполним пропущенные значения средним.
+```{r}
+me <- mean(sleep$BodyTemperature, na.rm = TRUE)
+sleep$BodyTemperature[indices] <- mean(sleep$BodyTemperature, na.rm = TRUE)
+print(me)
+```
+
+```{r}
+ggplot(sleep, aes(x = BodyTemperature)) + 
+  geom_density(aes(fill = "Density"), lwd = 1, alpha = 0.4) +
+  geom_histogram(aes(y = ..density.., fill = "Histogram"), 
+                 colour = 1, alpha = 0.4, bins = 40) +
+  scale_fill_manual(name = "Legend", values = c("Histogram" = "#69b3a2", "Density" = 4)) +
+  ggtitle("KDE для BodyTemperature с заполнением средним") +
+  theme(
+    legend.position = c(.95, .95),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6)
+  )
+```
+
+Можно сделать вывод о том, что методы заполнения пропусков медианными и средними значениями в целом дают довольно близкие результаты.
+
+
+## 6. Анализ нормального распределения (на малых и больших выборках).
+Сгенерируем выборки разных объемов с разными средними и дисперсиями.
+```{r}
+data1 <- rnorm(50, 0, 1)
+data2 <- rnorm(100, 2, 2)
+data3 <- rnorm(5000, 1, 4)
+data4 <- rnorm(2000, 11, 3)
+data5 <- rnorm(1000, 1, 1)
+```
+
+### Анализ с помощью графиков эмпирических функций распределений
+```{r}
+plot(ecdf(data1), main = "Эмпирическая функция распределения data1",
+     xlab = "Значение", ylab = "F(x)", col = "blue")
+```
+
+```{r}
+plot(ecdf(data2), main = "Эмпирическая функция распределения data2",
+     xlab = "Значение", ylab = "F(x)", col = "violet")
+```
+
+```{r}
+plot(ecdf(data3), main = "Эмпирическая функция распределения data3",
+     xlab = "Значение", ylab = "F(x)", col = "red")
+```
+
+```{r}
+plot(ecdf(data4), main = "Эмпирическая функция распределения data4",
+     xlab = "Значение", ylab = "F(x)", col = "orange")
+```
+
+```{r}
+plot(ecdf(data5), main = "Эмпирическая функция распределения data5",
+     xlab = "Значение", ylab = "F(x)", col = "green")
+```
+
+Для интереса построим все эмпирические функции распределения на одном графике.
+
+```{r}
+x_range <- range(c(data1, data2, data3, data4, data5))
+plot(ecdf(data1), main = "Эмпирические функции распределения",
+     xlab = "Значение", ylab = "F(x)", col = "blue", lwd = 2, xlim=x_range)
+lines(ecdf(data2), col = "violet", lwd = 2)
+lines(ecdf(data3), col = "red", lwd = 2)
+lines(ecdf(data4), col = "orange", lwd = 2)
+lines(ecdf(data5), col = "green", lwd = 2)
+legend("bottomright", legend = c("1 (n=50, μ=0, σ=1)", 
+                                 "2 (n=100, μ=2, σ=2)",
+                                 "3 (n=5000, μ=1, σ=4)",
+                                 "4 (n=2000, μ=11, σ=3)",
+                                 "5 (n=1000, μ=1, σ=1)"
+                                 ),
+       col = c("blue", "violet", "red", "orange", "green"), lwd = 2)
+```
+
+### Анализ с помощью графиков квантилей
+
+Напишем небольшую универсальную функцию для построения графиков квантилей (QQ-plot).
+Если выборка действительно нормальная, точки на графике будут лежать на линии (y = x) или близко к ней.
+```{r}
+qqgraph <- function(data, data_name="", color="") {
+  qqnorm(data, pch = 1, main = paste("Q-Q график для нормальной выборки ", data_name),
+       xlab = "Теоретические квантили", ylab = "Выборочные квантили")
+  qqline(data, col = color, lwd = 2)
+}
+```
+
+Теперь можно построить QQ-plot для наших нормальных выборок.
+```{r}
+qqgraph(data1, data_name="data1", color="blue")
+```
+
+```{r}
+qqgraph(data2, data_name="data2", color="violet")
+```
+
+```{r}
+qqgraph(data3, data_name="data3", color="red")
+```
+
+```{r}
+qqgraph(data4, data_name="data4", color="orange")
+```
+
+```{r}
+qqgraph(data5, data_name="data5", color="yellow")
+```
+
+
+### Анализ с помощью метода огибающих
+```{r}
+my_envelope <- function(data, data_name="", color="") {
+  qqPlot(data, dist = "norm", col = color, pch = 19,
+       xlab = "Квантили нормального распределения",
+       ylab = "Наблюдаемые квантили",
+       main = paste("Метод огибающих для нормальной выборки ", data_name), 
+       envelope=list(level=0.99, col=color))
+}
+```
+
+```{r}
+my_envelope(data1, data_name="data1", color="blue")
+```
+
+```{r}
+my_envelope(data2, data_name="data2", color="violet")
+```
+
+```{r}
+my_envelope(data3, data_name="data3", color="red")
+```
+
+```{r}
+my_envelope(data4, data_name="data4", color="orange")
+```
+
+```{r}
+my_envelope(data5, data_name="data5", color="yellow")
+```
+
+### Стандартные процедуры проверки гипотез о нормальности.
+#### 1. Критерий Колмогорова-Смирнова
+Часто Критерий Колмогорова-Смирнова рассматривают как два отдельных критерия.
+
+###### 1. Критерий согласия Колмогорова — служит для проверки гипотезы о принадлежности значений выборки к определенному теоретическому закону распределения.
+
+```{r}
+ks.test(data1, "pnorm", 0, 1)
+ks.test(data2, "pnorm", 2, 2)
+ks.test(data3, "pnorm", 1, 4)
+ks.test(data4, "pnorm", 11, 3)
+ks.test(data5, "pnorm", 1, 1)
+```
+Первый тест дал p-value > 0.05, значит, данные действительно принадлежат стандартному нормальному распределению. Второй тест показал p-value < 0.05.
+
+###### 2. Критерий однородности Смирнова — применяется для проверки гипотезы о принадлежности значений двух независимых выборок к одному и тому же закону распределения.
+
+```{r}
+ks.test(data1, data3)
+ks.test(data4, data5)
+```
+В обоих случаях `p-value < 0.05`, поэтому выборки принадлежат разным распределениям.
+
+#### 2. Критерий Шапиро-Уилка
+```{r}
+stats::shapiro.test(data1)
+stats::shapiro.test(data2)
+stats::shapiro.test(data3)
+stats::shapiro.test(data4)
+stats::shapiro.test(data5)
+```
+Все данные распределены нормально, поскольку каждый тест выдал ```p-value > 0.05```.
+
+
+#### 3. Критерий Андерсона-Дарлинга
+```{r}
+nortest::ad.test(data1)
+nortest::ad.test(data2)
+nortest::ad.test(data3)
+nortest::ad.test(data4)
+nortest::ad.test(data5)
+```
+Все данные распределены нормально, поскольку каждый тест выдал ```p-value > 0.05```.
+
+#### 4. Критерий Крамера фон Мизеса
+```{r}
+cvm.test(data1, "pnorm", mean=0, sd=1)
+cvm.test(data2, "pnorm", mean=2, sd=2)
+cvm.test(data3, "pnorm", mean=1, sd=4)
+cvm.test(data4, "pnorm", mean=11, sd=3)
+cvm.test(data5, "pnorm", mean=1, sd=1)
+```
+
+Все p-value больше 0.05, что указывает на то, что гипотеза о нормальности распределения данных не отклоняется для всех выборок.
+
+
+#### 5. Критерий Колмогорова-Смирнова в модификации Лиллиефорса
+```{r}
+lillie.test(data1)
+lillie.test(data2)
+lillie.test(data3)
+lillie.test(data4)
+lillie.test(data5)
+```
+Все данные распределены нормально, поскольку каждый тест выдал ```p-value > 0.05```.
+
+
+#### 6. Критерий Шапиро-Франсия
+```{r}
+sf.test(data1)
+sf.test(data2)
+sf.test(data3)
+sf.test(data4)
+sf.test(data5)
+```
+Все данные распределены нормально, поскольку каждый тест выдал ```p-value > 0.05```.
+
+
+## 7. Продемонстрировать пример анализа данных с помощью графиков квантилей, метода огибающих, а также стандартных процедур проверки гипотез о нормальности. Рассмотреть выборки малого и умеренного объемов.
+
+Начнем с выборки малого объема. Для этого я воспользуюсь новым датасетом, содержащем информацию о 77 видах хлопьев (https://www.kaggle.com/datasets/crawford/80-cereals).
+
+Поля в наборе данных:
+
+1. Name: Название хлопьев
+
+2. mfr: Производитель хлопьев 
+
+2.1. A = American Home Food Products;
+
+2.2. G = General Mills;
+
+2.3. K = Kelloggs;
+
+2.4. N = Nabisco;
+
+2.5. P = Post;
+
+2.6. Q = Quaker Oats;
+
+2.7. R = Ralston Purina
+
+3. type:
+
+3.1. cold = холодные хлопья
+
+3.2. hot = горячие хлопья
+
+4. calories: калорийность на порцию
+5. protein: граммы белка
+6. fat: граммы жира
+7. sodium: миллиграммы натрия
+8. fiber: граммы пищевых волокон
+9. carbo: граммы сложных углеводов
+10. sugars: граммы сахара
+11. potass: миллиграммы калия
+12. vitamins: витамины и минералы — 0, 25 или 100, указывающие типичный процент от рекомендуемой нормы FDA
+13. shelf: номер полки для демонстрации (1, 2 или 3, считая от пола)
+14. weight: вес одной порции в унциях
+15. cups: количество чашек в одной порции
+16. rating: рейтинг хлопьев (Возможно, из Consumer Reports?)
+
+Изучим, как распределены различные характеристики хлопьев в этом датасете.
+
+Для начала загрузим датасет в окружение.
+
+```{r}
+cereal <- read.csv("D:\\Artyom\\ВМК\\5 семестр\\Практикум\\Cereal.csv")
+head(cereal)
+```
+
+
+Для анализа выборки умеренного объема я возьму данные из датасета sleep - LightExposureHours.
+### Анализ данных с помощью графиков квантилей
+```{r}
+qqgraph(cereal$calories, data_name="cereal$calories", color="blue")
+qqgraph(sleep$LightExposureHours, data_name="sleep$LightExposureHours", color="violet")
+```
+
+### Анализ данных с помощью метода огибающих
+```{r}
+my_envelope(cereal$calories, data_name="cereal$calories", color="blue")
+my_envelope(sleep$LightExposureHours, data_name="sleep$LightExposureHours", color="violet")
+```
+
+Исходя из графиков метода огибающих можем сделать вывод, что данные `sleep$LightExposureHours` распределены нормально, в то время как `cereal$calories` нет.
+
+### Стандартные процедуры проверки гипотез о нормальности
+
+#### 1. Критерий Колмогорова-Смирнова
+
+Проведем тест Колмогорова-Смирнова для калорий.
+```{r}
+ks.test(cereal$calories, "pnorm")
+```
+
+И сразу сталкиваемся с проблемой (warning): для корректного проведения данного теста все значения в выборке должны быть уникальными. Добавим нормальный шум к элементам этой выборки и проведем тест для зашумленных данных.
+
+```{r}
+cereal$calories_noisy <- cereal$calories + rnorm(length(cereal$calories), mean = 0, sd = 1e-6)
+ks.test(cereal$calories_noisy, "pnorm", mean = mean(cereal$calories_noisy), sd = sd(cereal$calories_noisy))
+```
+
+Данные о калориях не распределены нормально, поскольку тест выдал ```p-value < 0.05```.
+Проведем исследование для LightExposureHours.
+
+```{r}
+ks.test(sleep$LightExposureHours, "pnorm")
+```
+
+Данные о часах воздействия света в течение дня распределены нормально, поскольку тест выдал ```p-value > 0.05```.
+
+#### 2. Критерий Шапиро-Уилка
+```{r}
+shapiro.test(cereal$calories)
+shapiro.test(sleep$LightExposureHours)
+```
+Данные о калориях не распределены нормально, поскольку тест выдал ```p-value < 0.05```. Данные о часах воздействия света в течение дня распределены нормально, поскольку тест выдал ```p-value > 0.05```.
+
+#### 3. Критерий Андерсона-Дарлинга
+```{r}
+nortest::ad.test(cereal$calories)
+nortest::ad.test(sleep$LightExposureHours)
+```
+Данные о калориях не распределены нормально, поскольку тест выдал ```p-value < 0.05```. Данные о часах воздействия света в течение дня распределены нормально, поскольку тест выдал ```p-value > 0.05```.
+
+#### 4. Критерий Крамера фон Мизеса
+```{r}
+nortest::cvm.test(cereal$calories)
+nortest::cvm.test(sleep$LightExposureHours)
+```
+Данные о калориях не распределены нормально, поскольку тест выдал ```p-value < 0.05```. Данные о часах воздействия света в течение дня распределены нормально, поскольку тест выдал ```p-value > 0.05```.
+
+#### 5. Критерий Колмогорова-Смирнова в модификации Лиллиефорса и Шапиро-Франсия
+```{r}
+lillie.test(cereal$calories)
+lillie.test(sleep$LightExposureHours)
+```
+Данные о калориях не распределены нормально, поскольку тест выдал ```p-value < 0.05```. Данные о часах воздействия света в течение дня распределены нормально, поскольку тест выдал ```p-value > 0.05```.
+
+#### 6. Критерий Шапиро-Франсия
+```{r}
+sf.test(cereal$calories)
+sf.test(sleep$LightExposureHours)
+```
+Данные о калориях не распределены нормально, поскольку тест выдал ```p-value < 0.05```. Данные о часах воздействия света в течение дня распределены нормально, поскольку тест выдал ```p-value > 0.05```.
+
+
+
+# Вторая часть
+
+## 8. Продемонстрировать применение для проверки различных гипотез и различных доверительных уровней (0.9, 0.95, 0.99) следующих критериев:
+
+Для проверки гипотез возьмем новый интересный датасет -- зависимость уровня счастья в странах от различных показателей.
+
+```{r}
+
+happiness <- read.csv("../happiness.csv")
+
+head(happiness, 3)
+
+colnames(happiness)[colnames(happiness) == "Ladder.score"] <- "happiness_score"
+colnames(happiness)[colnames(happiness) == "Regional.indicator"] <- "region"
+colnames(happiness)[colnames(happiness) == "Standard.error.of.ladder.score"] <- "std_happiness_score"
+colnames(happiness)[colnames(happiness) == "Logged.GDP.per.capita"] <- "gdp"
+colnames(happiness)[colnames(happiness) == "Social.support"] <- "social_support"
+colnames(happiness)[colnames(happiness) == "Freedom.to.make.life.choices"] <- "freedom"
+colnames(happiness)[colnames(happiness) == "Generosity"] <- "generosity"
+colnames(happiness)[colnames(happiness) == "Perceptions.of.corruption"] <- "corruption_perceptions"
+colnames(happiness)[colnames(happiness) == "Healthy.life.expectancy"] <- "life_expectancy"
+colnames(happiness)[colnames(happiness) == "Country.name"] <- "Country name"
+
+
+happiness <- happiness[, (colnames(happiness) %in% c("Country name","region", "happiness_score", "gdp", "social_support", "life_expectancy", "freedom", "generosity", "corruption_perceptions"))]
+
+head(happiness, 3)
+```
+
+
+### a. Стьюдента, включая односторонние варианты, когда проверяемая нулевая гипотеза заключается в том, что одно из сравниваемых  средних значений больше (или меньше) другого. Реализовать оценку мощности критериев при заданном объеме выборки или определения объема выборки для достижения заданной мощности;
+
+#### 1. Одновыборочный критерий Стьюдента. 
+Проверим выборку `happiness_score` на нормальность.
+```{r}
+shapiro.test(happiness$happiness_score)
+```
+`p-value > 0.05`, поэтому уровень счастья распределен нормально.
+
+Проверим, равен ли уровень счастья 5.9 на разных уровнях доверия `alpha = 0.90`, `alpha = 0.95`, `alpha = 0.99`.
+
+```{r}
+mu <- 5.9
+t.test(happiness$happiness_score, mu = mu, alternative = "two.sided", conf.level = 0.9)
+t.test(happiness$happiness_score, mu = mu, alternative = "two.sided", conf.level = 0.95)
+t.test(happiness$happiness_score, mu = mu, alternative = "two.sided", conf.level = 0.99)
+```
+
+#### 2.1 Односторонние критерии Стьюдента. Greater.
+```{r}
+mu <- 5.9
+t.test(happiness$happiness_score, mu = mu, alternative = "greater", conf.level = 0.9)
+t.test(happiness$happiness_score, mu = mu, alternative = "greater", conf.level = 0.95)
+t.test(happiness$happiness_score, mu = mu, alternative = "greater", conf.level = 0.99)
+```
+#### 2.2 Односторонние критерии Стьюдента. Less
+```{r}
+mu <- 5.9
+t.test(happiness$happiness_score, mu = mu, alternative = "less", conf.level = 0.9)
+t.test(happiness$happiness_score, mu = mu, alternative = "less", conf.level = 0.95)
+t.test(happiness$happiness_score, mu = mu, alternative = "less", conf.level = 0.99)
+```
+
+#### 3. Оценка мощности критерия при заданном объёме и оценка объёма выборки при заданной мощности
+
+Посмотрим, какую мощность имеет критерий при тестировании нашей основной выборки.
+
+```{r}
+power_result <- power.t.test(
+  n = length(happiness$happiness_score), 
+  delta = abs(mean(happiness$happiness_score) - mu), 
+  sd = sd(happiness$happiness_score), 
+  sig.level = 0.05, 
+  type = "one.sample", 
+  alternative = "two.sided"
+)
+power_result
+```
+
+Построим график оценки объема выборок.
+
+```{r}
+mu_0 <- 5.9  
+sample_mean <- mean(happiness$happiness_score)  
+sample_sd <- sd(happiness$happiness_score)      
+delta <- abs(sample_mean - mu_0)       
+effect_size <- delta / sample_sd
+
+
+n_values <- seq(10, 100, by = 10) 
+power_values <- sapply(n_values, function(n) {
+  pwr.t.test(n = n, d = effect_size, sig.level = 0.05, type = "one.sample", alternative = "two.sided")$power
+})
+
+plot_data <- data.frame(
+  n_values = n_values,
+  power_values = power_values
+)
+
+ggplot(plot_data, aes(x = n_values, y = power_values)) +
+  geom_line(color = "blue") +
+  geom_point(color = "blue") +
+  geom_hline(yintercept = 0.8, color = "red", linetype = "dashed") +
+  labs(
+    title = "Зависимость мощности от размера выборки",
+    x = "Размер выборки",
+    y = "Мощность"
+  ) +
+  theme_minimal()
+```
+
+Видим, что для достижения мощности 0.8 при уровне значимости 0.05 размер выборки должен быть около 70.
+ 
+### 2. Двухвыборочный критерий Стьюдента. 
+
+Сравним математические ожидания уровня счастья в странах Европы и Азии.
+
+```{r}
+europe_table <- happiness[happiness$region %in% c("Western Europe", "Central and Eastern Europe", "Commonwealth of Independent States"), ]
+asia_table <- happiness[happiness$region %in% c("East Asia", "Southeast Asia", "South Asia"), ]
+
+europe_mean <- mean(europe_table$happiness_score)
+asia_mean <- mean(asia_table$happiness_score)
+
+cat("Среднее для Европы:", europe_mean, "\n")
+cat("Среднее для Азии:", asia_mean, "\n")
+```
+
+
+#### 1. Двухсторонний критерий Стьюдента
+
+```{r}
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "two.sided", conf.level = 0.9)
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "two.sided", conf.level = 0.95)
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "two.sided", conf.level = 0.99)
+```
+
+#### 2.1. Односторонний критерий Стьюдента. Greater.
+
+```{r}
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "greater", conf.level = 0.9)
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "greater", conf.level = 0.95)
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "greater", conf.level = 0.99)
+```
+
+#### 2.2. Односторонний критерий Стьюдента. Less.
+
+```{r}
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "less", conf.level = 0.9)
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "less", conf.level = 0.95)
+t.test(europe_table$happiness_score, asia_table$happiness_score, alternative = "less", conf.level = 0.99)
+```
+
+
+#### 3. Оценка мощности критерия при заданном объёме и оценка объёма выборки при заданной мощности
+
+Посмотрим, какую мощность имеет критерий при тестировании нашей основной выборки.
+
+```{r}
+n1 <- length(europe_table$happiness_score)
+n2 <- length(asia_table$happiness_score)
+s1 <- sd(europe_table$happiness_score)
+s2 <- sd(asia_table$happiness_score)
+delta <- abs(mean(europe_table$happiness_score) - mean(asia_table$happiness_score))
+sd <- sqrt(((n1 - 1) * s1^2 + (n2 - 1) * s2^2) / (n1 + n2 - 2)) # объединенное стандартное отклонение
+effect_size <- delta / sd  
+power_result <- pwr.t2n.test(
+  n1 = n1, 
+  n2 = n2, 
+  d = effect_size, 
+  sig.level = 0.05, 
+  alternative = "two.sided"
+)
+
+power_result
+```
+
+
+### b. Ранговый критерий Уилкоксона-Манна-Уитни
+
+Сравним социальную поддержку в странах Европы (Western Europe, Central and Eastern Europe) и в странах Африки (Middle East and North Africa, Sub-Saharan Africa)
+
+
+```{r}
+europe <- happiness$social_support[happiness$region %in% c("Western Europe", "Central and Eastern Europe")]
+africa <- happiness$social_support[happiness$region %in% c("Middle East and North Africa", "Sub-Saharan Africa")]
+
+cat("Mean for Europe:", mean(europe, na.rm = TRUE), "\n")
+cat("Mean for Africa:", mean(africa, na.rm = TRUE), "\n")
+
+test_two_sided <- wilcox.test(africa, europe, alternative = "two.sided")
+test_greater <- wilcox.test(africa, europe, alternative = "greater")
+test_less <- wilcox.test(africa, europe, alternative = "less")
+
+# Вывод результатов
+cat("EX = EY (two-sided):\t", test_two_sided$statistic, test_two_sided$p.value, "\n")
+cat("EX > EY (greater):\t", test_greater$statisitc, test_greater$p.value, "\n")
+cat("EX < EY (less):\t\t", test_less$statistic, test_less$p.value, "\n")
+```
+
+### c. Проверка гипотез об однородности дисперсий
+
+#### 1. Критерий Фишера
+```{r}
+light_exposure_std <- sd(sleep$LightExposureHours, na.rm = TRUE)
+movement_std <- sd(sleep$MovementDuringSleep, na.rm = TRUE)
+
+cat("LightExposureHours std:", light_exposure_std, "\n")
+cat("MovementDuringSleep std:", movement_std, "\n")
+
+fisher_test <- function(x, y, alternative) {
+  test <- var.test(x, y, alternative = alternative)
+  return(test$p.value)
+}
+
+cat("two-sided (DX != DY): ", fisher_test(sleep$MovementDuringSleep, sleep$LightExposureHours, alternative = "two.sided"), "\n")
+cat("greater (DX > DY): ", fisher_test(sleep$MovementDuringSleep, sleep$LightExposureHours, alternative = "greater"), "\n")
+cat("less (DX < DY): ", fisher_test(sleep$MovementDuringSleep, sleep$LightExposureHours, alternative = "less"), "\n")
+```
+
+#### 2. Критерий Левене
+
+```{r}
+western <- happiness$gdp[happiness$region == "Western Europe"]
+central_eastern <- happiness$gdp[happiness$region == "Central and Eastern Europe"]
+
+western_std <- var(western, na.rm = TRUE)
+central_eastern_std <- var(central_eastern, na.rm = TRUE)
+
+cat("Variation for Western Europe:", western_std, "\n")
+cat("Variation for Central and Eastern Europe:", central_eastern_std, "\n")
+
+leveneTest(c(western, central_eastern), 
+           group = factor(c(rep("Western Europe", length(western)), 
+                            rep("Central and Eastern Europe", length(central_eastern)))), 
+           center = "median")
+```
+
+#### 3. Критерий Барлетта
+
+```{r}
+bartlett.test(list(sleep$MovementDuringSleep, sleep$LightExposureHours))
+```
+
+#### 4. Критерий Флингера-Киллина
+
+```{r}
+fligner.test(
+  x = c(western, central_eastern),
+  g = factor(c(rep("Western Europe", length(western)), rep("Central and Eastern Europe", length(central_eastern))))
+)
+```
+
+## 9. Исследовать корреляционные взаимосвязи в данных с помощью коэффициентов корреляции Пирсона, Спирмена и Кендалла.
+
+### 1. Корреляция Пирсона
+
+Для вычисления коэффициентов корреляции Пирсона необходимы две нормально распределенных выборки.
+
+```{r}
+shapiro.test(sleep$LightExposureHours)
+shapiro.test(sleep$MovementDuringSleep)
+```
+
+Эти выборки действительно распределены нормально.
+
+```{r}
+cor.test(sleep$LightExposureHours, sleep$MovementDuringSleep, method = "pearson")
+```
+
+`p-value > 0.05`, это означает, что нет статистически значимой линейной зависимости между переменными.
+
+### 2. Корреляция Спирмена
+
+Для ненормально распределенных переменных, а также при наличии нелинейной связи между переменными следует использовать непараметрический коэффициент корреляции Спирмена.
+
+```{r warning=FALSE}
+cor.test(happiness$gdp, happiness$happiness_score, method = "spearman")
+```
+
+Между переменными существует сильная и значимая положительная монотонная связь.
+Значение коэффициента Спирмена говорит о том, что с увеличением одной переменной другая также увеличивается, и эта связь достаточно надежна.
+
+```{r warning=FALSE}
+cor.test(happiness$gdp, happiness$corruption_perceptions, method = "spearman")
+```
+Между двумя переменными существует слабая, но значимая отрицательная монотонная связь.
+Отрицательный коэффициент говорит о том, что по мере увеличения одной переменной другая имеет тенденцию к уменьшению (то есть чем выше уровень коррупции, тем в среднем ниже уровень счастья в стране).
+
+### 3. Корреляция Кендалла
+
+```{r warning=FALSE}
+cor.test(happiness$gdp, happiness$happiness_score, method = "kendall")
+```
+
+Между `gdp` и `happiness_score` существует сильная и значимая положительная монотонная связь.
+
+```{r warning=FALSE}
+cor.test(happiness$gdp, happiness$corruption_perceptions, method = "kendall")
+```
+
+## 10. Продемонстрировать использование методов хи-квадрат, точного теста Фишера, теста МакНемара, Кохрана-Мантеля-Хензеля.
+
+#### 1. Метод хи-квадрат
+
+Найдем зависимость между уровнем ВВП и регионом проживания.
+
+Разделим показания ВВП на три уровня: низкий (ниже 8.6), средний (от 8.6 до 10.1), высокий (более 10.1).
+
+```{r}
+bins <- c(0, 8.6, 10.1, 100)
+labels <- c("low", "mediun", "high")
+happiness$gdp_category <- cut(happiness$gdp, breaks = bins, labels = labels, right = FALSE)
+```
+
+
+Для удобства объединим некоторые регионы в бóльшие сущности:
+
+1. `Europe`: `Western Europe` + `Central and Eastern Europe` + `Commonwealth of Independent States`
+
+2. `America`: `North America and ANZ` + `Latin America and Caribbean`
+
+3. `Asia`: `East Asia` + `Southeast Asia` + `South Asia`
+
+4. `Africa`: `Sub-Saharan Africa` + `Middle East and North Africa`
+
+```{r}
+europe_table <- happiness[happiness$region %in% c("Western Europe", "Central and Eastern Europe", "Commonwealth of Independent States"), ]
+america_table <- happiness[happiness$region %in% c("North America and ANZ", "Latin America and Caribbean"), ]
+asia_table <- happiness[happiness$region %in% c("East Asia", "Southeast Asia", "South Asia"), ]
+africa_table <- happiness[happiness$region %in% c("Sub-Saharan Africa", "Middle East and North Africa"), ]
+
+
+europe_table$region <- "Europe"
+africa_table$region <- "Africa"
+asia_table$region <- "Asia"
+america_table$region <- "America"
+
+set.seed(42)
+combined_table <- rbind(europe_table, africa_table, america_table, asia_table)
+combined_table <- combined_table[sample(nrow(combined_table)), ] 
+
+combined_table <- combined_table[, c("region", "gdp_category")]
+
+contingency_table <- table(combined_table$region, combined_table$gdp_category)
+
+cat("Таблица сопряженности:\n")
+print(contingency_table)
+```
+
+
+```{r}
+chi2_result <- chisq.test(contingency_table)
+cat("Результаты теста хи-квадрат:\n")
+cat(sprintf("χ²: %.4f, p-значение: %f, степени свободы: %d\n", 
+            chi2_result$statistic, chi2_result$p.value, chi2_result$parameter))
+
+cat("\nОжидаемые частоты:\n")
+print(chi2_result$expected)
+```
+
+Значение p-value < 0.05, значит между регионом и уровнем ВВП существует статистически значимая зависимость.
+
+
+#### 2. Точный тест Фишера
+
+```{r}
+europe_table <- happiness[happiness$region %in% c("Western Europe", "Central and Eastern Europe"), ]
+africa_table <- happiness[happiness$region %in% c("Middle East and North Africa", "Sub-Saharan Africa"), ]
+
+europe_table$region <- "Europe"
+africa_table$region <- "Africa"
+
+set.seed(42)
+combined_table <- rbind(europe_table, africa_table)
+combined_table <- combined_table[sample(nrow(combined_table)), ]
+
+combined_table <- combined_table[, c("region", "happiness_score")]
+combined_table$happiness_category <- ifelse(combined_table$happiness_score > 6, "happy", "unhappy")
+
+contingency_table <- table(combined_table$region, combined_table$happiness_category)
+
+cat("Таблица сопряженности:\n")
+print(contingency_table)
+fisher_result <- fisher.test(contingency_table)
+```
+```{r}
+fisher_result <- fisher.test(contingency_table)
+
+cat("Отношение шансов:", fisher_result$estimate, "\n")
+cat("p-значение:", fisher_result$p.value, "\n")
+```
+
+Значение p-value < 0.05, значит между регионом и уровнем счастья существует статистически значимая зависимость.
+
+
+#### 3. Тест МакНемара
+
+Я нашел данные об уровне счастья за 2023 год. Сравним изменения.
+Пусть страна является счастливой, если `happiness_score > 6`.
+
+```{r}
+happiness2023 <- read.csv("../happiness2023.csv")
+
+colnames(happiness2023)[colnames(happiness2023) == "Ladder.score"] <- "happiness_score"
+colnames(happiness2023)[colnames(happiness2023) == "Regional.indicator"] <- "region"
+colnames(happiness2023)[colnames(happiness2023) == "Standard.error.of.ladder.score"] <- "std_happiness_score"
+colnames(happiness2023)[colnames(happiness2023) == "Logged.GDP.per.capita"] <- "gdp"
+colnames(happiness2023)[colnames(happiness2023) == "Social.support"] <- "social_support"
+colnames(happiness2023)[colnames(happiness2023) == "Freedom.to.make.life.choices"] <- "freedom"
+colnames(happiness2023)[colnames(happiness2023) == "Generosity"] <- "generosity"
+colnames(happiness2023)[colnames(happiness2023) == "Perceptions.of.corruption"] <- "corruption_perceptions"
+colnames(happiness2023)[colnames(happiness2023) == "Healthy.life.expectancy"] <- "life_expectancy"
+colnames(happiness2023)[colnames(happiness2023) == "Country.name"] <- "Country name"
+
+happiness2023 <- happiness2023[, 1:12]
+
+happiness2023 <- happiness2023[, !(colnames(happiness2023) %in% c("std_happiness_score", "upperwhisker", "lowerwhisker", "Ladder.score.in.Dystopia"))]
+
+head(happiness2023, 3)
+```
+
+
+```{r}
+happiness$happiness_category <- ifelse(happiness$happiness_score > 6, "happy", "unhappy")
+happiness2023$happiness_category <- ifelse(happiness2023$happiness_score > 6, "happy", "unhappy")
+
+sub_happiness <- happiness[, c("Country name", "happiness_category")]
+sub_happiness2023 <- happiness2023[, c("Country name", "happiness_category")]
+
+sub_happiness$year <- 2021
+sub_happiness2023$year <- 2023
+
+combined_data <- merge(
+  sub_happiness[, c("Country name", "happiness_category")],
+  sub_happiness2023[, c("Country name", "happiness_category")],
+  by = "Country name",
+  suffixes = c("_2021", "_2023")
+)
+
+head(combined_data)
+```
+
+```{r}
+contingency_table <- table(
+  `2021` = combined_data$happiness_category_2021,
+  `2023` = combined_data$happiness_category_2023
+)
+
+cat("Таблица сопряженности 2×2:\n")
+print(contingency_table)
+```
+
+```{r}
+mcnemar_result <- mcnemar.test(contingency_table)
+cat(sprintf("Статистика: %f, p-значение: %f\n", mcnemar_result$statistic, mcnemar_result$p.value))
+```
+
+`p-value > 0.05`, что свидетельствует о отсутствии статистически значимых изменениий между уровнем счастья в мире в 2021 и 2023 годах.
+
+#### 4. Тест Кохрана-Мантеля-Хензеля
+
+
+```{r}
+happiness$social_support_category <- ifelse(happiness$social_support > 0.77, "high", "low")
+happiness$happiness_category <- ifelse(happiness$happiness_score > 6, "happy", "unhappy")
+
+europe_table <- subset(happiness, region %in% c("Western Europe", "Central and Eastern Europe", "Commonwealth of Independent States"))
+america_table <- subset(happiness, region %in% c("North America and ANZ", "Latin America and Caribbean"))
+asia_table <- subset(happiness, region %in% c("East Asia", "Southeast Asia", "South Asia"))
+africa_table <- subset(happiness, region %in% c("Sub-Saharan Africa", "Middle East and North Africa"))
+
+europe_table$region <- "Europe"
+africa_table$region <- "Africa"
+asia_table$region <- "Asia"
+america_table$region <- "America"
+
+
+combined_table <- rbind(europe_table, africa_table, america_table, asia_table)
+
+
+set.seed(42)
+combined_table <- combined_table[sample(nrow(combined_table)), ]
+
+
+combined_table <- combined_table[, c("region", "happiness_category", "social_support_category")]
+
+head(combined_table)
+```
+
+
+```{r}
+regions <- unique(combined_table$region)
+stratified_data <- list()
+
+for (region in regions) {
+  subset <- combined_table[combined_table$region == region, ]
+  contingency_table <- table(subset$happiness_category, subset$social_support_category)
+  stratified_data[[region]] <- contingency_table
+}
+stratified_data
+```
+
+
+```{r}
+combined_array <- array(NA, dim = c(2, 2, length(stratified_data)))
+for (i in seq_along(stratified_data)) {
+  combined_array[,,i] <- stratified_data[[i]]
+}
+cmh_result <- mantelhaen.test(combined_array)
+print(cmh_result)
+```
+
+## 11. Проверить наличие мультиколлинеарности в данных с помощью корреляционной матрицы и фактора инфляции дисперсии. 
+```{r}
+numeric_vars <- sapply(sleep, is.numeric)
+sleep_numeric <- sleep[, numeric_vars]
+
+custom_order <- c(
+  "HeartRateVariability", "BodyTemperature", "MovementDuringSleep",
+  "SleepDurationHours", "SleepQualityScore", "CaffeineIntakeMg",
+  "StressLevel", "BedtimeConsistency", "LightExposureHours"
+)
+
+corr <- cor(sleep_numeric, use = "complete.obs")
+
+corr <- corr[custom_order, rev(custom_order)]
+
+corr_melted <- melt(corr)
+
+ggplot(data = corr_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_distiller(palette = "RdBu", limits = c(-1, 1), direction = 1) +
+  geom_text(aes(label = round(value, 2)), size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 10, angle = 90, hjust = 1, vjust = 0.5),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        plot.title = element_text(size = 10, face = "bold")) +
+  labs(title = "Корреляционная матрица: sleep", x = "", y = "") +
+  coord_fixed()
+```
+
+Видна четкая зависимость между оценкой качества сна и количеством принятого кофеина: чем больше человек принял кофеина (например, выпил много кофе), тем хуже он спит. 
+
+```{r}
+happiness_numeric <- happiness[sapply(happiness, is.numeric)]
+corr <- cor(happiness_numeric, use = "complete.obs")
+
+custom_order <- c(
+  "happiness_score", 
+  "gdp", 
+  "social_support", 
+  "life_expectancy", 
+  "freedom", 
+  "generosity", 
+  "corruption_perceptions"
+)
+
+corr <- corr[custom_order, rev(custom_order)]
+
+corr_melted <- melt(corr)
+
+ggplot(data = corr_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_distiller(palette = "RdBu", limits = c(-1, 1), direction = 1) +
+  geom_text(aes(label = round(value, 2)), size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 10, angle = 90, hjust = 1, vjust = 0.5),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        plot.title = element_text(size = 10, face = "bold")) +
+  labs(title = "Корреляционная матрица: happiness", x = "", y = "") +
+  coord_fixed()
+```
+
+Как мы можем заметить, на уровень счастья в стране влияют высокий показатель ВВП (т.е. развитая экономика), высокая социальная поддержка (пенсии, стипендии, хорошее медобслуживание и прочее), уровень свободы, однако очень много людей беспокоит уровень коррупции, что снижает уровень счастья.
+
+```{r}
+selected_features <- c(
+  "HeartRateVariability",
+  "BodyTemperature",
+  "MovementDuringSleep",
+  "SleepDurationHours",
+  "SleepQualityScore",
+  "CaffeineIntakeMg",
+  "StressLevel",
+  "BedtimeConsistency",
+  "LightExposureHours"
+)
+sleep_selected <- sleep[, selected_features]
+sleep_selected$const <- 1
+model <- lm(const ~ ., data = sleep_selected)
+VIFs <- vif(model)
+VIF_table <- data.frame(
+  Variable = names(VIFs),
+  VIF = as.numeric(VIFs)
+)
+print(VIF_table)
+```
+Высокие значения VIF указывают на потенциальные проблемы с мультиколлинеарностью. Как правило, значение VIF выше 5 требует внимания, а выше 10 — серьезного рассмотрения изменений в модели. У нас все в порядке.
+
+```{r}
+library(car)
+selected_features <- c(
+  "happiness_score", 
+  "gdp", 
+  "social_support", 
+  "life_expectancy", 
+  "freedom", 
+  "generosity", 
+  "corruption_perceptions"
+)
+happiness_selected <- happiness[, selected_features]
+happiness_selected$const <- 1
+model <- lm(const ~ ., data = happiness_selected)
+VIFs <- vif(model)
+VIF_table <- data.frame(
+  Variable = names(VIFs),
+  VIF = as.numeric(VIFs)
+)
+
+print(VIF_table)
+```
+
+На фоне прочих предикторов сильно выделяются `gdp`, `life_expectancy`, `social_support`. Удалим один из параметров (например, `gdp`) из данных.
+
+```{r}
+selected_features <- c(
+  "happiness_score", 
+  "social_support", 
+  "life_expectancy", 
+  "freedom", 
+  "generosity", 
+  "corruption_perceptions"
+)
+happiness_selected <- happiness[, selected_features]
+happiness_selected$const <- 1
+model <- lm(const ~ ., data = happiness_selected)
+VIFs <- vif(model)
+VIF_table <- data.frame(
+  Variable = names(VIFs),
+  VIF = as.numeric(VIFs) 
+)
+
+print(VIF_table)
+```
+## 12. Исследовать зависимости в данных с помощью дисперсионного анализа
+
+### 1. One-Way ANOVA
+
+Вспомним, что в датасете `happiness` есть нормально распределенная выборка `happiness_score` (это так, поскольку тест Шапиро-Уилка выдает `p-value > 0.05`). Предполагаем, что результаты тестирования стран на уровень счастья независимые.
+
+```{r}
+shapiro.test(happiness$happiness_score)
+```
+Для определения гомогенности дисперсий вначале обратимся к `stripchart` уровня счастья в зависимости от региона.
+
+```{r}
+ggplot(happiness, aes(x = region, y = happiness_score)) +
+  geom_jitter(color = "blue", width = 0.2, alpha = 0.7) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 8, angle = 90, vjust = 0.5, hjust = 1), 
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(size = 10),
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9)
+  ) +
+  labs(
+    title = "Stripchart of Happiness Score by Regions",
+    x = "Regions",
+    y = "Happiness Score"
+  )
+```
+
+Заметим, что регионы `Latin America and Caribbean`, `Sub-Saharan Africa`, `Middle East and North Africa` сильно выделяются на фоне других по дисперсии. Проведем тест Левене для оставшихся них.
+
+```{r}
+subset_data <- happiness[happiness$region %in% c("Middle East and North Africa", 
+                                                 "Latin America and Caribbean", 
+                                                 "Sub-Saharan Africa"), ]
+subset_data$region <- as.factor(subset_data$region)
+leveneTest(happiness_score ~ as.factor(region), data = subset_data, center = median)
+```
+
+`p-value > 0.05`, поэтому можем принять гипотезу о равенстве дисперсий. One-Way ANOVA применим.
+
+```{r}
+anova_result <- aov(happiness_score ~ region, data = subset_data)
+summary(anova_result)
+```
+
+Мы не можем принять гипотезу о равенстве средних, значит, регион проживания действительно влияет на уровень счастья.
+
+### 2. Two-Way ANOVA
+
+Теперь исследуем влияние нескольких факторов на уровень счастья. Создадим новую факторную переменную `freedom_level`, основанную на `freedom`.
+
+```{r}
+happiness$freedom_level <- cut(
+  happiness$freedom,
+  breaks = c(-1, 0.7, 0.85, 1),
+  labels = c("Low", "Medium", "High"),
+  right = TRUE # включить правую границу
+)
+
+sub_happiness <- happiness[happiness$region %in% c("Middle East and North Africa", 
+                                                   "Latin America and Caribbean", 
+                                                   "Sub-Saharan Africa"), ]
+head(sub_happiness)
+```
+
+```{r warning=FALSE}
+sub_happiness$region <- as.factor(sub_happiness$region)
+sub_happiness$freedom_level <- as.factor(sub_happiness$freedom_level)
+
+model <- lm(happiness_score ~ freedom_level * region, data = sub_happiness)
+anova_table <- Anova(model, type = 2)
+print(anova_table)
+```
+
+Вышеперечисленные факторы и их сочетания влияют на уровень счастья.
+
+
+## 13. Подогнать регрессионные модели (в том числе, нелинейные) к данным, а также оценить качество подобной аппроксимации.
+
+#### 1. Линейная регрессия на объединенных данных за 2021 и 2023 годы
+
+```{r}
+head(happiness)
+```
+
+```{r}
+sub_happiness <- happiness[, c("happiness_score", "gdp", "social_support", "life_expectancy", 
+                                "freedom", "generosity")]
+sub_happiness2023 <- happiness2023[, c("happiness_score", "gdp", "social_support", "life_expectancy", 
+                                       "freedom", "generosity")]
+
+happiness_combined <- rbind(sub_happiness, sub_happiness2023)
+replace_na_with_median <- function(x) {
+  if (is.numeric(x)) {
+    x[is.na(x)] <- median(x, na.rm = TRUE)
+  }
+  return(x)
+}
+
+happiness_combined <- as.data.frame(lapply(happiness_combined, replace_na_with_median))
+head(happiness_combined)
+```
+
+```{r}
+X <- happiness_combined[, setdiff(names(happiness_combined), "happiness_score")]
+y <- happiness_combined$happiness_score
+X <- as.matrix(X)
+y <- as.numeric(y)
+model <- lm(y ~ X)
+summary(model)
+```
+
+```{r}
+pred <- model$fitted.values
+mse <- mean((y - pred)^2)
+rmse <- sqrt(mse)
+
+cat("MSE: ", mse, "\n")
+cat("RMSE: ", rmse, "\n")
+```
+
+```{r}
+model_1 <- lm(happiness_score ~ gdp, data = happiness_combined)
+summary(model_1)
+pred <- model_1$fitted.values
+mse <- mean((y - pred)^2)
+rmse <- sqrt(mse)
+
+cat("MSE: ", mse, "\n")
+cat("RMSE: ", rmse, "\n")
+```
+
+```{r}
+pred <- predict(model_1, newdata = happiness_combined)
+
+plot(happiness_combined$gdp, happiness_combined$happiness_score,
+     main = "Regression of Happiness Score on GDP",
+     xlab = "GDP", ylab = "Happiness Score",
+     pch = 19, col = rgb(0, 0, 1, 0.7), cex = 0.8)  # цвет и размер точек
+
+lines(sort(happiness_combined$gdp), 
+      sort(pred), 
+      col = "red", lwd = 2)
+
+legend("topleft", legend = c("Observed data", "Regression line"),
+       col = c(rgb(0, 0, 1, 0.7), "red"), pch = c(19, NA), lty = c(NA, 1), lwd = 2)
+```
+
+
+#### 2. Полиномиальная регрессия на объединенных данных за 2021 и 2023 годы
+
+```{r}
+X <- happiness_combined[, setdiff(names(happiness_combined), "happiness_score")]
+y <- happiness_combined$happiness_score
+degree <- 2
+poly_features <- as.data.frame(poly(as.matrix(X), degree = degree, raw = TRUE))
+names(poly_features) <- paste0("V", seq_along(names(poly_features)))
+poly_features$y <- y
+formula <- as.formula(paste("y ~", paste(names(poly_features)[-ncol(poly_features)], collapse = " + ")))
+model <- lm(formula, data = poly_features)
+summary(model)
+```
+
+```{r}
+pred <- model$fitted.values
+mse <- mean((y - pred)^2)
+rmse <- sqrt(mse)
+
+cat("MSE: ", mse, "\n")
+cat("RMSE: ", rmse, "\n")
+```
+
+```{r}
+model_poly <- lm(happiness_score ~ gdp + I(gdp^2), data = happiness_combined)
+summary(model_poly)
+pred <- model_poly$fitted.values
+mse <- mean((y - pred)^2)
+rmse <- sqrt(mse)
+
+cat("MSE: ", mse, "\n")
+cat("RMSE: ", rmse, "\n")
+```
+
+```{r}
+gdp_sorted <- seq(min(happiness_combined$gdp), max(happiness_combined$gdp), length.out = 100)
+predicted_happiness <- predict(model_poly, newdata = data.frame(gdp = gdp_sorted))
+plot(happiness_combined$gdp, happiness_combined$happiness_score,
+     main = "Polynomial Regression of Happiness Score on GDP",
+     xlab = "GDP", ylab = "Happiness Score",
+     pch = 19, col = rgb(0, 0, 1, 0.7), cex = 0.8)
+
+lines(gdp_sorted, predicted_happiness, col = "red", lwd = 2)
+legend("topleft", legend = c("Observed data", "Polynomial regression line"),
+       col = c(rgb(0, 0, 1, 0.7), "red"), pch = c(19, NA), lty = c(NA, 1), lwd = 2)
+```
+
+#### 3. Логарифмическая регрессия на объединенных данных за 2021 и 2023 годы
+
+```{r}
+X <- happiness_combined[, setdiff(names(happiness_combined), "happiness_score")]
+y <- happiness_combined$happiness_score
+
+X_log <- log1p(X)
+X_log <- as.matrix(X_log)
+y <- as.numeric(y)
+model_log <- lm(y ~ X_log)
+summary(model_log)
+pred <- model_log$fitted.values
+mse <- mean((y - pred)^2)
+rmse <- sqrt(mse)
+
+cat("MSE: ", mse, "\n")
+cat("RMSE: ", rmse, "\n")
+```
+
+```{r}
+model_log <- lm(happiness_score ~ log(gdp), data = happiness_combined)
+summary(model_log)
+pred <- model_log$fitted.values
+mse <- mean((y - pred)^2)
+rmse <- sqrt(mse)
+
+cat("MSE: ", mse, "\n")
+cat("RMSE: ", rmse, "\n")
+```
+
+
+```{r}
+gdp_sorted <- seq(min(happiness_combined$gdp), max(happiness_combined$gdp), length.out = 100)
+predicted_happiness <- predict(model_log, newdata = data.frame(gdp = gdp_sorted))
+plot(happiness_combined$gdp, happiness_combined$happiness_score,
+     main = "Logarifmic Regression of Happiness Score on GDP",
+     xlab = "GDP", ylab = "Happiness Score",
+     pch = 19, col = rgb(0, 0, 1, 0.7), cex = 0.8)  
+
+lines(gdp_sorted, predicted_happiness, col = "red", lwd = 2)
+legend("topleft", legend = c("Observed data", "Polynomial regression line"),
+       col = c(rgb(0, 0, 1, 0.7), "red"), pch = c(19, NA), lty = c(NA, 1), lwd = 2)
+```
